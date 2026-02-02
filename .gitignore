@@ -1,3 +1,5 @@
 *.txt
 *.html
 __pycache__/
+.venv
+.vscode
