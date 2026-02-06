@@ -6,13 +6,38 @@ from get_next import get_next_chapter_url
 from typing import Any  # pyright: ignore[reportUnusedImport]
 import time
 
+def search_novel(responses: list[tuple[Response, str]], Novel_Name: str,scraper: CloudScraper, urls: list[str]) -> str:
+    for r in responses:
+        search_url: str = r[1]
+        if search_url == urls[0]:
+            search_url += f"search?keyword={Novel_Name}&type=title"
+        elif search_url  == urls[1]:
+            search_url += f"?search={Novel_Name}"
+        elif search_url  == urls[2]:
+            search_url += f"search?keyword={Novel_Name}"
+            
+        response : Response = scraper.get(url=search_url)
+        print(response.status_code)
+        print(search_url)
+        
+        safe_filename: str = r[1].replace("https://", "").replace("/", "_").replace(":", "__").replace(".", "-")
+        with open(file=f"{safe_filename}.html", mode="w", encoding="utf-8") as f:
+            _ = f.write(response.text)
+    
+    return "done"
+
+def safe_string(String : str)->str:
+    String = String.replace(" ","+")
+    String = String.lower()
+    return String
+
 def fetch() -> int:
     scraper: CloudScraper = cloudscraper.create_scraper()  # pyright: ignore[reportUnknownMemberType]
     
     urls: list[str] = []
-    urls.append("https://novelfire.net/") #Has home? to get queried novel names
-    urls.append("https://www.novels.pl/") #has ?search=[string] to get queried names
-    urls.append("https://novelbin.com/") #has search?keyword=S[string] to get queried names
+    urls.append("https://novelfire.net/") #Has search?keyword=[string]&type=title to get names
+    urls.append("https://novels.pl/") #has ?search=[string] to get queried names
+    urls.append("https://novelbin.com/") #has search?keyword=[string] to get queried names
     
     responses: list[tuple[Response, str]] = []
     
@@ -30,8 +55,9 @@ def fetch() -> int:
     if len(responses) < 1:
         return -1 #means no reachable link.
     
-    current_url:str = responses[0][1] #getting from one which has fastest access time.
     
+    novel_url: str = search_novel(responses=responses, Novel_Name=safe_string(String="Shadow Slave"),scraper=scraper, urls= urls)
+    print(novel_url)
     print(responses)
     return 0
     current_url: str = "https://novelbin.com/b/shadow-slave/chapter-1-nightmare-begins"
