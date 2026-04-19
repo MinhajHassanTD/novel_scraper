@@ -1,5 +1,6 @@
 *.txt
 *.html
+*.epub
 __pycache__/
 .venv
 .vscode

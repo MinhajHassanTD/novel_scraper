@@ -1,14 +1,8 @@
 from bs4 import BeautifulSoup, Tag
 
-def get_next_chapter_url(html_file_path: str) -> str | None: 
-    with open(file=html_file_path, mode="r", encoding="utf-8") as f:
-        soup: BeautifulSoup = BeautifulSoup(markup=f.read(), features='html.parser')
-    
+def get_next_url(html: str) -> str | None:
+    soup: BeautifulSoup = BeautifulSoup(markup=html, features='html.parser')
     next_link: Tag | None = soup.find(id='next_chap')
-    
     if next_link:
         return str(next_link.get(key='href'))
     return None
-
-if __name__ == "__main__":
-    _ = get_next_chapter_url(html_file_path="chapter.html")
