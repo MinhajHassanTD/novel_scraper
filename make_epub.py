@@ -1,4 +1,9 @@
+import re
 from ebooklib import epub
+
+def _chapter_name(raw: str) -> str:
+    m = re.match(r'^Chapter\s+\d+\s+(.*)', raw, re.IGNORECASE)
+    return m.group(1).strip() if m else raw
 
 def build_epub(title: str, author: str, chapters: list[tuple[str, list[str]]], filename: str | None = None, cover: bytes | None = None) -> str:
     book = epub.EpubBook()
@@ -10,8 +15,9 @@ def build_epub(title: str, author: str, chapters: list[tuple[str, list[str]]], f
 
     epub_chapters: list[epub.EpubHtml] = []
     for i, (chapter_title, paragraphs) in enumerate(chapters):
+        toc_title = _chapter_name(chapter_title)
         content = f'<h2>{chapter_title}</h2>' + ''.join(f'<p>{p}</p>' for p in paragraphs)
-        chap = epub.EpubHtml(title=chapter_title, file_name=f'chap_{i+1}.xhtml', lang='en')
+        chap = epub.EpubHtml(title=toc_title, file_name=f'chap_{i+1}.xhtml', lang='en')
         chap.content = content
         book.add_item(chap)
         epub_chapters.append(chap)
