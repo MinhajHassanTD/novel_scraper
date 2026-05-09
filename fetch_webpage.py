@@ -1,3 +1,4 @@
+import re
 import time
 import threading
 import cloudscraper
@@ -6,33 +7,83 @@ from urllib.parse import urlparse
 from typing import Callable
 from bs4 import BeautifulSoup
 import os
+import socket
 from get_text import extract_chapter
 from get_next import get_next_url
 from make_epub import build_epub
 
+_MAX_RETRIES = 3
+_RETRY_BACKOFF = 2.0  # seconds, doubles each attempt
 
-def fetch_metadata(chapter_url: str, scraper: CloudScraper) -> tuple[str, str, bytes | None]:
+
+def _get_with_retry(scraper: CloudScraper, url: str, log: Callable[[str], None]) -> str:
+    last_exc: Exception | None = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            resp = scraper.get(url=url, timeout=30)
+            resp.raise_for_status()
+            return resp.text
+        except Exception as exc:
+            last_exc = exc
+            is_dns = isinstance(exc.__cause__, socket.gaierror) or "NameResolutionError" in type(exc).__name__ or "getaddrinfo" in str(exc)
+            if is_dns:
+                log(f"  DNS error — cannot reach {urlparse(url).netloc}. Check your internet connection.")
+                raise
+            if attempt < _MAX_RETRIES:
+                wait = _RETRY_BACKOFF * (2 ** (attempt - 1))
+                log(f"  Request failed (attempt {attempt}/{_MAX_RETRIES}), retrying in {wait:.0f}s…")
+                time.sleep(wait)
+    raise RuntimeError(f"Failed after {_MAX_RETRIES} attempts: {last_exc}") from last_exc
+
+
+def _meta(soup: BeautifulSoup, prop: str) -> str:
+    tag = soup.find("meta", property=prop)
+    return tag["content"].strip() if tag and tag.get("content") else ""  # type: ignore[index]
+
+
+def _book_url(chapter_url: str) -> str:
     parsed = urlparse(chapter_url)
     base_path = parsed.path.rstrip("/").rsplit("/", 1)[0]
-    base_url = f"{parsed.scheme}://{parsed.netloc}{base_path}"
+    return f"{parsed.scheme}://{parsed.netloc}{base_path}"
 
-    soup = BeautifulSoup(scraper.get(base_url).text, "html.parser")
 
-    title_tag = soup.select_one("h3.title") or soup.select_one(".book-name") or soup.find("h3")
-    author_tag = soup.select_one("a[href*='author']") or soup.select_one(".author")
-    cover_tag = soup.select_one(".book img") or soup.select_one("img.cover") or soup.select_one(".cover img")
+def _chapter_count(soup: BeautifulSoup) -> int | None:
+    # Extract chapter number from the latest-chapter meta URL (most reliable)
+    for prop in ("og:novel:latest_chapter_link", "og:novel:latest_chapter_url"):
+        url = _meta(soup, prop)
+        if url:
+            m = re.search(r"/chapter-(\d+)", url)
+            if m:
+                return int(m.group(1))
 
-    title = title_tag.get_text(strip=True) if title_tag else ""
-    author = author_tag.get_text(strip=True) if author_tag else ""
+    # Fall back to DOM selectors
+    for sel in (".chapter-count", ".total-chapter", "[class*='chapter-count']", "[class*='total-chapter']"):
+        tag = soup.select_one(sel)
+        if tag:
+            m = re.search(r"\d+", tag.get_text())
+            if m:
+                return int(m.group())
+
+    m = re.search(r"(\d+)\s+[Cc]hapters?", soup.get_text())
+    return int(m.group(1)) if m else None
+
+
+def fetch_metadata(chapter_url: str, scraper: CloudScraper) -> tuple[str, str, bytes | None]:
+    base_url = _book_url(chapter_url)
+    soup = BeautifulSoup(_get_with_retry(scraper, base_url, print), "html.parser")
+
+    title  = _meta(soup, "og:novel:novel_name") or _meta(soup, "og:title")
+    author = _meta(soup, "og:novel:author")
+    cover_url = _meta(soup, "og:image")
 
     cover_bytes: bytes | None = None
-    if cover_tag:
-        src = cover_tag.get("src") or cover_tag.get("data-src")
-        if src:
-            try:
-                cover_bytes = scraper.get(str(src)).content
-            except Exception:
-                pass
+    if cover_url:
+        try:
+            resp = scraper.get(cover_url, timeout=30)
+            resp.raise_for_status()
+            cover_bytes = resp.content
+        except Exception:
+            pass
 
     return title, author, cover_bytes
 
@@ -59,6 +110,14 @@ def fetch(
     max_chapters = (end_chapter - start_chapter + 1) if end_chapter > 0 else 0
 
     scraper: CloudScraper = cloudscraper.create_scraper()  # pyright: ignore[reportUnknownMemberType]
+
+    try:
+        book_soup = BeautifulSoup(_get_with_retry(scraper, _book_url(start_url), log), "html.parser")
+        total = _chapter_count(book_soup)
+        log(f"Total chapters available: {total}" if total else "Total chapters: unknown")
+    except Exception:
+        log("Total chapters: unknown")
+
     current_url = start_url
     chapters: list[tuple[str, list[str]]] = []
 
@@ -70,7 +129,11 @@ def fetch(
         chapter_num = start_chapter + len(chapters)
         log(f"Fetching chapter {chapter_num}...")
         t0 = time.monotonic()
-        html: str = scraper.get(url=current_url).text
+        try:
+            html: str = _get_with_retry(scraper, current_url, log)
+        except Exception as exc:
+            log(f"  Failed to fetch chapter {chapter_num}: {exc}")
+            break
 
         chapter_title, paragraphs = extract_chapter(html)
         chapters.append((chapter_title, paragraphs))

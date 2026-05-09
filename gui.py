@@ -35,14 +35,14 @@ FONT_MONO  = ("Consolas", 9)
 class NovelScraperGUI:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        root.withdraw()  # hide until fully styled to prevent white flash
+        root.withdraw()
         root.title("Novel Scraper")
         root.resizable(False, False)
         root.configure(bg=C["bg"])
 
         self._cancel_event = threading.Event()
-        self._cover_bytes: bytes | None = None
         self._chapter_times: list[float] = []
+        self._url_rows: list[tuple[tk.StringVar, ttk.Frame]] = []
 
         self._setup_style()
         self._build_ui()
@@ -140,49 +140,47 @@ class NovelScraperGUI:
 
         def label(parent: ttk.Frame, text: str, row: int) -> None:
             ttk.Label(parent, text=text, style="Surface.TLabel").grid(
-                row=row, column=0, sticky="e", padx=(0, 8), pady=4)
+                row=row, column=0, sticky="ne", padx=(0, 8), pady=6)
 
-        # Title
-        self.title_var = tk.StringVar(value="Shadow Slave")
-        label(card, "Novel Title:", 0)
+        # Title (optional override — auto-filled per URL if blank)
+        self.title_var = tk.StringVar()
+        label(card, "Title Override:", 0)
         ttk.Entry(card, textvariable=self.title_var).grid(
             row=0, column=1, columnspan=3, sticky="ew", pady=4)
 
-        # Author
-        self.author_var = tk.StringVar(value="Guiltythree")
-        label(card, "Author:", 1)
+        # Author (optional override)
+        self.author_var = tk.StringVar()
+        label(card, "Author Override:", 1)
         ttk.Entry(card, textvariable=self.author_var).grid(
             row=1, column=1, columnspan=3, sticky="ew", pady=4)
 
-        # URL row: entry + Paste + Auto-fill
-        self.url_var = tk.StringVar(
-            value="https://novelbin.com/b/shadow-slave/chapter-1-nightmare-begins")
-        label(card, "Start URL:", 2)
-        ttk.Entry(card, textvariable=self.url_var).grid(
-            row=2, column=1, sticky="ew", pady=4, padx=(0, 4))
-        ttk.Button(card, text="Paste", style="Small.TButton",
-                   command=self._paste_url).grid(row=2, column=2, pady=4, padx=(0, 4))
-        self.autofill_btn = ttk.Button(card, text="Auto-fill", style="Small.TButton",
-                                       command=self._auto_fill)
-        self.autofill_btn.grid(row=2, column=3, pady=4)
+        # URL list
+        label(card, "URLs:", 2)
+        self._url_list_frame = ttk.Frame(card, style="Surface.TFrame")
+        self._url_list_frame.grid(row=2, column=1, columnspan=3, sticky="ew", pady=(4, 2))
+        self._url_list_frame.columnconfigure(0, weight=1)
+        self._add_url_row()
+
+        ttk.Button(card, text="+ Add URL", style="Small.TButton",
+                   command=self._add_url_row).grid(row=3, column=1, sticky="w", pady=(0, 6))
 
         # Save row
-        self.save_var = tk.StringVar(value=os.path.expanduser("~\\Desktop"))
-        label(card, "Save to:", 3)
+        self.save_var = tk.StringVar(value=r"C:\Users\Hp\Minhaj\Kindle")
+        label(card, "Save to:", 4)
         ttk.Entry(card, textvariable=self.save_var).grid(
-            row=3, column=1, columnspan=2, sticky="ew", pady=4, padx=(0, 4))
+            row=4, column=1, columnspan=2, sticky="ew", pady=4, padx=(0, 4))
         ttk.Button(card, text="Browse", style="Small.TButton",
-                   command=self._browse).grid(row=3, column=3, pady=4)
+                   command=self._browse).grid(row=4, column=3, pady=4)
 
         # Options LabelFrame
         opts = ttk.LabelFrame(card, text="Options", padding=(10, 6))
-        opts.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(8, 2))
+        opts.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(8, 2))
         opts.columnconfigure((1, 3), weight=1)
 
         self.start_var = tk.StringVar(value="1")
         self.end_var   = tk.StringVar(value="0")
-        self.delay_var = tk.StringVar(value="1.0")
-        self.open_var  = tk.BooleanVar(value=True)
+        self.delay_var = tk.StringVar(value="1.5")
+        self.open_var  = tk.BooleanVar(value=False)
         self.cover_var = tk.BooleanVar(value=True)
 
         ttk.Label(opts, text="Start Ch:", style="Surface.TLabel").grid(
@@ -210,7 +208,7 @@ class NovelScraperGUI:
                                     style="Accent.TButton", command=self._start)
         self.start_btn.grid(row=3, column=0, sticky="ew", pady=(0, 10))
 
-        # Log pane (manual Text + Scrollbar for full styling control)
+        # Log pane
         log_frame = ttk.Frame(outer)
         log_frame.grid(row=4, column=0, sticky="ew", pady=(0, 6))
         log_frame.columnconfigure(0, weight=1)
@@ -231,8 +229,8 @@ class NovelScraperGUI:
 
         # ETA label
         self.eta_var = tk.StringVar(value="")
-        self.eta_label = ttk.Label(outer, textvariable=self.eta_var, style="ETA.TLabel")
-        self.eta_label.grid(row=5, column=0, sticky="w", pady=(0, 2))
+        ttk.Label(outer, textvariable=self.eta_var, style="ETA.TLabel").grid(
+            row=5, column=0, sticky="w", pady=(0, 2))
 
         # Progress bar
         self.progress = ttk.Progressbar(
@@ -252,47 +250,50 @@ class NovelScraperGUI:
                                      command=self._cancel, state="disabled")
         self.cancel_btn.grid(row=0, column=1, sticky="e")
 
-    # ── Actions ───────────────────────────────────────────────────────────
+    # ── URL list management ───────────────────────────────────────────────
 
-    def _paste_url(self) -> None:
+    def _add_url_row(self) -> None:
+        var = tk.StringVar()
+        idx = len(self._url_rows)
+        row = ttk.Frame(self._url_list_frame, style="Surface.TFrame")
+        row.grid(row=idx, column=0, sticky="ew", pady=(0, 3))
+        row.columnconfigure(0, weight=1)
+
+        ttk.Entry(row, textvariable=var).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(row, text="Paste", style="Small.TButton",
+                   command=lambda v=var: self._paste_into(v)).grid(row=0, column=1, padx=(0, 4))
+        ttk.Button(row, text="×", style="Small.TButton",
+                   command=lambda r=row, v=var: self._remove_url_row(r, v)).grid(row=0, column=2)
+
+        self._url_rows.append((var, row))
+        self._sync_remove_btns()
+
+    def _remove_url_row(self, row: ttk.Frame, var: tk.StringVar) -> None:
+        self._url_rows = [(v, r) for v, r in self._url_rows if r is not row]
+        row.destroy()
+        for i, (_, r) in enumerate(self._url_rows):
+            r.grid(row=i)
+        self._sync_remove_btns()
+
+    def _sync_remove_btns(self) -> None:
+        only_one = len(self._url_rows) == 1
+        for _, row in self._url_rows:
+            for child in row.winfo_children():
+                if isinstance(child, ttk.Button) and child.cget("text") == "×":
+                    child.configure(state="disabled" if only_one else "normal")
+
+    def _paste_into(self, var: tk.StringVar) -> None:
         try:
-            self.url_var.set(self.root.clipboard_get())
+            var.set(self.root.clipboard_get())
         except tk.TclError:
             pass
+
+    # ── Actions ───────────────────────────────────────────────────────────
 
     def _browse(self) -> None:
         path = filedialog.askdirectory(title="Select save directory")
         if path:
             self.save_var.set(path)
-
-    def _auto_fill(self) -> None:
-        url = self.url_var.get().strip()
-        if not url:
-            return
-        self.autofill_btn.configure(state="disabled", text="Filling…")
-        self._append_log("Auto-filling metadata…")
-        threading.Thread(target=self._run_autofill, args=(url,), daemon=True).start()
-
-    def _run_autofill(self, url: str) -> None:
-        try:
-            scraper = cloudscraper.create_scraper()  # pyright: ignore[reportUnknownMemberType]
-            title, author, cover = fetch_metadata(url, scraper)
-            def apply() -> None:
-                if title:
-                    self.title_var.set(title)
-                if author:
-                    self.author_var.set(author)
-                self._cover_bytes = cover
-                filled = []
-                if title: filled.append(f"title: {title}")
-                if author: filled.append(f"author: {author}")
-                cover_msg = " | cover: found" if cover else " | cover: not found"
-                self._append_log("  Got " + ", ".join(filled) + cover_msg if filled else "  Nothing detected")
-                self.autofill_btn.configure(state="normal", text="Auto-fill")
-            self.root.after(0, apply)
-        except Exception as e:
-            self.root.after(0, self._append_log, f"  Auto-fill error: {e}")
-            self.root.after(0, self.autofill_btn.configure, {"state": "normal", "text": "Auto-fill"})
 
     def _cancel(self) -> None:
         self._cancel_event.set()
@@ -314,23 +315,76 @@ class NovelScraperGUI:
 
     def _run(self) -> None:
         try:
-            end_ch  = int(self.end_var.get() or 0)
+            urls = [v.get().strip() for v, _ in self._url_rows if v.get().strip()]
+            if not urls:
+                raise ValueError("No URLs provided.")
+
+            end_ch   = int(self.end_var.get() or 0)
             start_ch = int(self.start_var.get() or 1)
-            output = fetch(
-                start_url=self.url_var.get().strip(),
-                title=self.title_var.get().strip(),
-                author=self.author_var.get().strip(),
-                start_chapter=start_ch,
-                end_chapter=end_ch,
-                delay=float(self.delay_var.get() or 1.0),
-                save_dir=self.save_var.get().strip(),
-                cover=self._cover_bytes if self.cover_var.get() else None,
-                cancel_event=self._cancel_event,
-                progress_callback=self._log,
-                on_chapter_done=self._on_chapter_done,
-            )
-            self._output_path = output
-            self.root.after(0, self._done, f"Done — {os.path.basename(output)}", True)
+            delay    = float(self.delay_var.get() or 1.0)
+            save_dir = self.save_var.get().strip()
+
+            completed = 0
+            for i, url in enumerate(urls):
+                if self._cancel_event.is_set():
+                    break
+
+                if len(urls) > 1:
+                    self._log(f"\n── Novel {i + 1}/{len(urls)} ──")
+
+                self._chapter_times.clear()
+
+                # Fetch metadata for this URL
+                self._log("Fetching metadata…")
+                title = author = ""
+                cover: bytes | None = None
+                try:
+                    scraper = cloudscraper.create_scraper()  # pyright: ignore[reportUnknownMemberType]
+                    m_title, m_author, m_cover = fetch_metadata(url, scraper)
+                    title  = self.title_var.get().strip() or m_title
+                    author = self.author_var.get().strip() or m_author
+                    cover  = m_cover if self.cover_var.get() else None
+                    # Update GUI fields only when scraping a single URL
+                    if len(urls) == 1:
+                        if not self.title_var.get().strip() and title:
+                            self.root.after(0, self.title_var.set, title)
+                        if not self.author_var.get().strip() and author:
+                            self.root.after(0, self.author_var.set, author)
+                    self._log(f"  {title or '(no title)'}  |  {author or '(no author)'}  |  Cover: {'found' if cover else 'not found'}")
+                except Exception as e:
+                    self._log(f"  Metadata fetch failed: {e}")
+                    title  = self.title_var.get().strip()
+                    author = self.author_var.get().strip()
+
+                try:
+                    output = fetch(
+                        start_url=url,
+                        title=title or "Unknown",
+                        author=author or "Unknown",
+                        start_chapter=start_ch,
+                        end_chapter=end_ch,
+                        delay=delay,
+                        save_dir=save_dir,
+                        cover=cover,
+                        cancel_event=self._cancel_event,
+                        progress_callback=self._log,
+                        on_chapter_done=self._on_chapter_done,
+                    )
+                    completed += 1
+                    self._log(f"Saved: {os.path.basename(output)}")
+                    if self.open_var.get():
+                        try:
+                            if sys.platform == "win32":
+                                os.startfile(output)
+                            else:
+                                subprocess.Popen(["xdg-open", output])
+                        except Exception:
+                            pass
+                except Exception as e:
+                    self._log(f"  Error: {e}")
+
+            noun = "novel" if completed == 1 else "novels"
+            self.root.after(0, self._done, f"Done — {completed} {noun} saved", completed > 0)
         except Exception as e:
             self.root.after(0, self._done, f"Error: {e}", False)
 
@@ -340,14 +394,6 @@ class NovelScraperGUI:
         self.cancel_btn.configure(state="disabled")
         color = C["success"] if success else C["error"]
         self.status_label.configure(foreground=color, text=msg)
-        if success and self.open_var.get() and hasattr(self, "_output_path"):
-            try:
-                if sys.platform == "win32":
-                    os.startfile(self._output_path)
-                else:
-                    subprocess.Popen(["xdg-open", self._output_path])
-            except Exception:
-                pass
 
     # ── Logging & ETA ─────────────────────────────────────────────────────
 
@@ -369,10 +415,7 @@ class NovelScraperGUI:
             total = end_ch - start_ch + 1
             remaining = max(0, total - ch_idx)
             eta_secs = int(avg * remaining)
-            if eta_secs >= 60:
-                eta_str = f"{eta_secs // 60}m {eta_secs % 60}s"
-            else:
-                eta_str = f"{eta_secs}s"
+            eta_str = f"{eta_secs // 60}m {eta_secs % 60}s" if eta_secs >= 60 else f"{eta_secs}s"
             text = f"Chapter: {ch_idx}/{total}  |  Avg: {avg:.1f}s/ch  |  ETA: {eta_str}"
         else:
             text = f"Chapter: {ch_idx} fetched  |  Avg: {avg:.1f}s/ch"
